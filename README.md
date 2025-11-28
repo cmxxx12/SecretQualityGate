@@ -1,98 +1,146 @@
-# Secret Resume Filter · Zama FHEVM
+# Quality Vault — Private Raw‑Material QA (Zama FHEVM)
 
-Privacy-first recruiting on-chain. Candidates submit **encrypted** résumé attributes; the contract returns only a single **encrypted verdict** (FIT / NO FIT). Employers decrypt the verdict with **userDecrypt** via Zama’s Relayer SDK, while raw inputs and criteria remain private.
+**Quality Vault** is a reference dApp that performs **hidden quality checks** for raw‑material batches using Zama’s **FHEVM**. Thresholds are stored **encrypted** on‑chain; suppliers submit **encrypted metrics**; the contract returns an **encrypted verdict** (ACCEPT / REJECT). Only the submitter (and an optional app address) can decrypt the result via **User Decrypt (EIP‑712)**.
 
-> **Network**: Sepolia
-> **Contract (deployed)**: `0x12D716b26D896adC8994eFe4b36f11EF37158D96`
-> **Relayer SDK**: `@zama-fhe/relayer-sdk` v0.2.0
-> **Solidity**: 0.8.24 with `viaIR: true`, optimizer enabled
+> Frontend file location: **`frontend/public/index.html`**
 
 ---
 
-## Overview
+## Components
 
-**Secret Resume Filter** is a minimal, production-style FHEVM dApp:
+### Smart Contract — `SecretQualityGate.sol`
 
-* **Employers** create positions and upload **encrypted criteria** (min experience, min education, required skills bitmask, max salary).
-* **Candidates** submit **encrypted applications** (same fields, encrypted locally in the browser).
-* The contract evaluates everything **homomorphically** and emits a handle for an **encrypted verdict**.
-* **Only the employer** gets decryption rights for the verdict (user-level EIP‑712 auth with Relayer SDK).
+* **Hidden thresholds** (all `euint16`):
 
-This lets teams pre-screen candidates without revealing sensitive compensation expectations or personal data on-chain.
+  * `maxImpurity`, `maxMoisture`, `minDensity`, `minHardness`.
+* **Set rules (encrypted)**: `setRulesEncrypted(externalEuint16[4], bytes proof)` — single batched proof.
+* **Submit batch**: `submitBatchAndCheck(bytes32 batchId, externalEuint16[4] metrics, bytes proof)` → stores encrypted `ebool` verdict; emits `BatchChecked(batchId, submitter, verdictHandle)`.
+* **Read handle**: `getVerdictHandle(bytes32 batchId)`.
+* **Make public**: `makeRulesPublic()` and `makeVerdictPublic(batchId)` (optional, for demos/audits).
+* Uses only official Zama FHE libs:
+
+  * `import { FHE, ebool, euint16, externalEuint16 } from "@fhevm/solidity/lib/FHE.sol";`
+  * `import { SepoliaConfig } from "@fhevm/solidity/config/ZamaConfig.sol";`
+
+### Frontend — `frontend/public/index.html`
+
+* Modern, three‑step **wizard** UX (distinct from other demos):
+
+  1. **Seal Input** — encrypt 4 metrics locally with **Relayer SDK 0.2.0**.
+  2. **Dispatch to Chain** — submit to contract; parse `BatchChecked` to get the handle.
+  3. **Reveal Locally** — EIP‑712 sign & **userDecrypt** verdict → **ACCEPT**/**REJECT**.
+* **Rules Vault** panel for admins:
+
+  * Upload encrypted thresholds (“**Seal Rules**”), **Audit Handles**, **Make Public** (optional).
+* **Deep console logs** for each stage (encryption, staticCall, tx, events, EIP‑712, decrypt).
+* Depends on:
+
+  * `@zama-fhe/relayer-sdk-js` **0.2.0** (via CDN),
+  * `ethers` v6 (via CDN),
+  * MetaMask (or any EIP‑1193 provider).
 
 ---
 
-## Core Features
+## Feature Highlights
 
-* 🔒 Fully encrypted inputs & criteria (Zama FHE Solidity lib).
-* ✅ Binary result only: **FIT / NO FIT** (as `ebool`).
-* 👤 Access control with `FHE.allow` — employer-only decryption.
-* 🧩 Bitmask skill check: `(skills & required) == required`.
-* 🔧 Clean separation of roles (Owner → creates positions, Employer → manages criteria, Candidate → applies).
-* ⚙️ Works with Relayer SDK v0.2.0 (WASM workers enabled).
+* 🔒 **Hidden rules** and **private inputs** — end‑to‑end ciphertext handling.
+* 🧮 **On‑chain FHE comparisons** only; no FHE in `view`/`pure`.
+* 🔑 **User‑scoped decryption** via EIP‑712; optional public decryption for audits.
+* 🧰 **Relayer SDK 0.2.0** primitives used exclusively: `createInstance`, `createEncryptedInput().add16(...)`, `userDecrypt(...)`.
+* 🖥️ **Original UI/UX** (tabs, wizard, right activity rail) — not reused from prior projects.
 
 ---
 
-## Smart Contract
+## Getting Started
 
-* File: `contracts/SecretResumeFilter.sol`
-* Inherits: `SepoliaConfig` from `@fhevm/solidity`
-* Uses only official Zama Solidity library: `@fhevm/solidity/lib/FHE.sol`
+### Prerequisites
 
-### Main storage
+* Node.js ≥ 18
+* pnpm / npm / yarn
+* MetaMask (connected to **Sepolia**)
 
-```solidity
-struct Criteria {
-  euint8  minExp;          // candidate.yearsExp >= minExp
-  euint8  minEdu;          // candidate.eduLevel >= minEdu
-  euint16 requiredSkills;  // (skills & required) == required
-  euint32 maxSalary;       // candidate.expSalary <= maxSalary
-  address employer;        // decrypt rights holder
-  bool    exists;
-}
+### Install
+
+```bash
+# 1) Install deps for contracts/workspace
+pnpm install   # or npm i / yarn
+
+# 2) (If you will compile/deploy) add FHEVM deps
+pnpm add -D hardhat hardhat-deploy @nomicfoundation/hardhat-toolbox
+pnpm add @fhevm/solidity
 ```
 
-### Key functions
+### Compile & Deploy (Hardhat)
 
-* `createPosition(uint256 positionId, address employer)` — owner creates/assigns a position to an employer.
-* `setCriteriaEncrypted(positionId, minExp, minEdu, reqSkills, maxSalary, proof)` — employer sets **encrypted** criteria via Relayer SDK.
-* `setCriteriaPlain(positionId, ...)` — dev helper; converts clear values to encrypted on-chain (avoid in prod).
-* `makeCriteriaPublic(positionId)` — demo helper to mark criteria publicly decryptable.
-* `getCriteriaHandles(positionId)` — returns `bytes32` handles for off-chain audits.
-* `evaluateApplication(positionId, yearsExp, eduLevel, skillsMask, expSalary, proof)` — returns encrypted `ebool` verdict; grants decryption right to the employer.
+The project includes a universal deploy script (no constructor args). The script auto-picks the latest contract or use env vars.
 
-> The `evaluateApplication` implementation aggregates conditions progressively inside scoped blocks to avoid `Stack too deep` and keeps gas reasonable.
+```bash
+# clean and compile
+npx hardhat clean
+npx hardhat compile
 
-### Events
+# deploy to sepolia (reads your named accounts from hardhat config)
+npx hardhat deploy --network sepolia
+```
 
-* `PositionCreated(positionId, employer)`
-* `CriteriaUpdated(positionId, minExpH, minEduH, requiredSkillsH, maxSalaryH)`
-* `ApplicationEvaluated(positionId, candidate, employer, verdictHandle)`
+**Environment (optional)**
+
+* `CONTRACT_NAME` — explicit contract name (e.g., `SecretQualityGate`).
+* `CONTRACT_FILE` — path under `contracts/`.
+* `CONSTRUCTOR_ARGS` — JSON array, if the target contract needs args (ours doesn’t).
+* `WAIT_CONFIRMS` — confirmations to wait.
+
+> If you ever hit “stack too deep”, you can either use the provided refactor (already applied) or enable `viaIR: true` + optimizer in Hardhat config.
+
+### Run the Frontend
+
+The frontend is a single **static** file at `frontend/public/index.html`. You can open it directly or serve locally:
+
+```bash
+# simplest: static server from the folder
+npx serve frontend/public
+# or
+npx http-server frontend/public -p 8080
+```
+
+Open **[http://localhost:8080](http://localhost:8080)** (or printed URL), click **Connect**, set rules (admin), then submit a batch (supplier).
 
 ---
 
-## Frontend
+## Usage Walkthrough
 
-* Single-file app
-* Location: **`frontend/public/index.html`** (no build tools required; pure ESM and CDN).
-* Tech: Ethers v6 + Relayer SDK v0.2.0.
-* Design: neon-glass dark UI with skill chips, event scanning & one-click decrypt.
+### 1) Admin seals thresholds
 
-**What it does:**
+1. Open **Rules Vault** tab.
+2. Enter `maxImpurity`, `maxMoisture`, `minDensity`, `minHardness` (all `0..65535`).
+3. Click **Seal Rules** → values encrypted locally → single batched proof → `setRulesEncrypted` tx.
+4. (Optional) **Audit Handles** to view `bytes32` handles or **Make Public** for demo.
 
-1. Connects wallet and initializes Relayer SDK (`initSDK()` → `createInstance(...)`).
-2. Employer flow: create position → set encrypted criteria → scan `ApplicationEvaluated` → **userDecrypt** verdict.
-3. Candidate flow: pick position → encrypt 4 fields → submit → employer later decrypts the verdict.
+### 2) Supplier submits encrypted batch
 
+1. Switch to **Quality Lab** tab.
+2. Enter metrics: `impurityPPM`, `moistureBP`, `density`, `hardness`.
+3. (Optional) Set a **Batch Salt** (used to derive `batchId = keccak256(salt)`). If empty, the app generates one.
+4. Click **Seal Input** → encrypt metrics (shows handle previews + proof size).
+5. Click **Dispatch to Chain** → send tx → the UI parses **BatchChecked** and shows the `verdictHandle`.
 
-## Security
+### 3) Reveal verdict locally
 
-* This project demonstrates encrypted comparisons using FHEVM. Always audit before production use.
-* Keep Relayer SDK versions pinned (here: v0.2.0).
-* Never log plaintext candidate data; UI encrypts client-side prior to any chain call.
+* Click **Reveal Locally** → the app generates a keypair, creates an EIP‑712 request, asks your wallet to sign, and calls **`userDecrypt`**. The result appears as **ACCEPT** / **REJECT**.
+* You can later **Recover by Batch ID** to fetch the stored handle and decrypt again.
+
+---
+
+## Development Notes
+
+* **Do not** use deprecated packages (e.g., `@fhevm-js/relayer` or `@fhenixprotocol/...`).
+* Use only: `@fhevm/solidity/lib/FHE.sol` and **Relayer SDK JS 0.2.0** (`https://cdn.zama.ai/relayer-sdk-js/0.2.0/relayer-sdk-js.js`).
+* Avoid FHE operations in `view`/`pure`. All FHE ops happen in state‑changing functions.
+* `euint256`/`eaddress` do **not** support arithmetic; this app uses `euint16` for all comparisons.
+* Access control: `FHE.allow`, `FHE.allowThis`, optional `FHE.makePubliclyDecryptable`.
 
 ---
 
 ## License
 
-MIT — see `LICENSE` file.
+MIT — see `LICENSE` (or choose your preferred OSS license).
